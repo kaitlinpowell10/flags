@@ -1,0 +1,153 @@
+---
+title: "Flags"
+format: html
+echo: false
+resources:
+  - flags/*.png
+---
+
+```{r}
+#| include: false
+# Extract flag features (spatial color grid, color histogram, and aspect ratio)
+py_code <- '
+import glob, json, os
+import numpy as np
+from PIL import Image
+
+features = []
+for f in sorted(glob.glob("flags/*.png")):
+    code = os.path.basename(f)[:-4]
+    im = Image.open(f).convert("RGBA")
+    w, h = im.size
+    bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+    rgb_im = Image.alpha_composite(bg, im).convert("RGB")
+    
+    small = np.asarray(rgb_im.resize((8, 6), Image.Resampling.BILINEAR), dtype=float) / 255.0
+    grid = np.round(small.flatten(), 3).tolist()
+    
+    arr = np.asarray(rgb_im.resize((40, 30), Image.Resampling.NEAREST), dtype=float) / 255.0
+    bins = np.floor(np.clip(arr * 3.999, 0, 3)).astype(int)
+    idx = bins[:, :, 0] * 16 + bins[:, :, 1] * 4 + bins[:, :, 2]
+    hist = np.bincount(idx.flatten(), minlength=64) / float(idx.size)
+    palette = np.round(hist, 3).tolist()
+    
+    features.append({
+        "code": code,
+        "aspect": round(w / float(h), 3),
+        "grid": grid,
+        "palette": palette
+    })
+
+print(json.dumps(features))
+'
+
+flag_data <- jsonlite::fromJSON(system2("python3", c("-c", shQuote(py_code)), stdout = TRUE), simplifyVector = FALSE)
+ojs_define(flag_data = flag_data)
+```
+
+```{ojs}
+//| output: false
+regionNames = new Intl.DisplayNames(["en"], { type: "region" })
+ukNames = ({
+  "gb-eng": "England",
+  "gb-nir": "Northern Ireland",
+  "gb-sct": "Scotland",
+  "gb-wls": "Wales"
+})
+
+flagLabel = (code) => ukNames[code] ?? regionNames.of(code.toUpperCase())
+
+euclidean = (a, b) => {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) {
+    const d = a[i] - b[i];
+    sum += d * d;
+  }
+  return Math.sqrt(sum / a.length);
+}
+
+flagDistance = (f1, f2, metric) => {
+  const layoutDist = euclidean(f1.grid, f2.grid);
+  const colorDist = euclidean(f1.palette, f2.palette) * 3.5;
+  const shapeDist = Math.abs(f1.aspect - f2.aspect);
+
+  if (metric === "Combined") return 0.55 * layoutDist + 0.35 * colorDist + 0.10 * shapeDist;
+  if (metric === "Layout") return layoutDist;
+  if (metric === "Color") return colorDist;
+  return shapeDist + 0.01 * colorDist;
+}
+
+selectedObj = flag_data.find(d => d.code === selectedFlag)
+
+rankedFlags = flag_data
+  .filter(d => d.code !== selectedFlag)
+  .map(d => ({
+    ...d,
+    name: flagLabel(d.code),
+    dist: flagDistance(selectedObj, d, similarityMetric)
+  }))
+  .sort((a, b) => a.dist - b.dist)
+
+closest3 = rankedFlags.slice(0, 3)
+distant3 = rankedFlags.slice(-3).reverse()
+```
+
+```{ojs}
+viewof selectedFlag = Inputs.select(flag_data.map(d => d.code), {
+  label: "Flag",
+  format: flagLabel,
+  sort: true,
+  value: "us"
+})
+
+viewof similarityMetric = Inputs.radio(
+  ["Combined", "Layout", "Color", "Shape"],
+  {
+    label: "Match",
+    value: "Combined"
+  }
+)
+```
+
+```{ojs}
+html`
+<div style="margin-top: 2rem; font-family: system-ui, sans-serif;">
+  <div style="text-align: center; margin-bottom: 2.5rem;">
+    <img src="flags/${selectedObj.code}.png"
+         alt="${flagLabel(selectedObj.code)}"
+         style="max-height: 240px; max-width: 100%; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);" />
+    <div style="margin-top: 0.75rem; font-size: 1.25rem; font-weight: 600;">
+      ${flagLabel(selectedObj.code)}
+    </div>
+  </div>
+
+  <div style="font-size: 0.85rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin-bottom: 0.75rem;">
+    Closest
+  </div>
+  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem; margin-bottom: 2.25rem;">
+    ${closest3.map(f => html`
+      <div style="text-align: center;">
+        <img src="flags/${f.code}.png"
+             alt="${f.name}"
+             style="height: 110px; max-width: 100%; object-fit: contain; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />
+        <div style="margin-top: 0.5rem; font-size: 0.95rem; font-weight: 500;">${f.name}</div>
+      </div>
+    `)}
+  </div>
+
+  <div style="font-size: 0.85rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin-bottom: 0.75rem;">
+    Farthest
+  </div>
+  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+    ${distant3.map(f => html`
+      <div style="text-align: center;">
+        <img src="flags/${f.code}.png"
+             alt="${f.name}"
+             style="height: 110px; max-width: 100%; object-fit: contain; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />
+        <div style="margin-top: 0.5rem; font-size: 0.95rem; font-weight: 500;">${f.name}</div>
+      </div>
+    `)}
+  </div>
+</div>
+`
+```
